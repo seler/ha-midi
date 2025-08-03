@@ -1,0 +1,51 @@
+# HA-MIDI Bridge Configuration
+# Copy this file to config.yaml and update with your settings
+
+mqtt:
+  # MQTT broker settings - typical Home Assistant defaults
+  broker: "homeassistant.local"    # Default Home Assistant hostname (or use IP like "192.168.1.100")
+  port: 1883                       # Default MQTT port (use 8883 for TLS)
+  username: ""                     # Leave empty if no authentication required
+  password: ""                     # Leave empty if no authentication required
+  client_id: "ha-midi-bridge"      # Unique client ID for this bridge
+  discovery_prefix: "homeassistant" # Default Home Assistant discovery prefix
+
+midi:
+  # MIDI device settings
+  auto_connect: true                # Automatically connect to MIDI devices
+  reconnect_interval: 5s            # How often to check device status (lightweight)
+  port_scan_interval: 30s          # How often to refresh MIDI ports from ALSA (resource-intensive)
+                                   # Increase if you get "Cannot allocate memory" errors
+
+  # Light control method for MIDI device LEDs/buttons
+  # Most devices work with "multi" which tries all methods
+  light_off_method: "multi"         # Options: "note_off", "velocity_zero", "velocity_one", "multi"
+
+  # Debug mode - set to true to see all MIDI messages in logs
+  debug_mode: false
+
+  # Maximum pitch bend value (standard is 8191, some devices differ)
+  pitch_bend_max_value: 8191
+
+  # Device-specific overrides (optional)
+  # Uncomment and modify if you need specific settings per device
+  # devices:
+  #   - name: "Your MIDI Device Name"
+  #     light_off_method: "note_off"
+  #     debug_mode: true
+  #     pitch_bend_max_value: 8191
+
+bridge:
+  # Bridge identification
+  id: "ha-midi-bridge"              # Unique ID (change if running multiple bridges)
+  name: "HA-MIDI Bridge"            # Friendly name for logs
+
+homeassistant:
+  # How the bridge appears in Home Assistant
+  device_name: "MIDI Bridge"
+  device_manufacturer: "HA-MIDI"
+  device_model: "Bridge v1.0"
+
+logging:
+  level: "info"                     # Options: "debug", "info", "warn", "error"
+  format: "text"                    # Options: "text", "json"

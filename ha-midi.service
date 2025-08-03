@@ -1,0 +1,33 @@
+[Unit]
+Description=HA-MIDI Bridge
+Documentation=https://github.com/seler/ha-midi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=midi
+Group=audio
+ExecStart=/usr/local/bin/ha-midi
+WorkingDirectory=/etc/ha-midi
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ha-midi
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/ha-midi
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Allow access to audio devices for MIDI
+SupplementaryGroups=audio
+
+[Install]
+WantedBy=multi-user.target

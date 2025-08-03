@@ -1,0 +1,240 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # Linux AMD64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary_name: ha-midi
+
+          # Linux ARM64 (Raspberry Pi 3+/4/5)
+          # Note: Native ARM64 runners require GitHub Team/Enterprise or self-hosted runners
+          # Uncomment below to use native ARM64 runner if available:
+          # - os: ubuntu-22.04-arm64  # Native ARM64 runner
+          #   goos: linux
+          #   goarch: arm64
+          #   binary_name: ha-midi
+          #   use_docker: false
+
+          # Linux ARM64 (cross-compile with Docker)
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            binary_name: ha-midi
+            use_docker: true
+
+          # Linux ARMv7 (Raspberry Pi 2, older models)
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm
+            goarm: 7
+            binary_name: ha-midi
+            use_docker: true
+
+          # macOS Intel
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            binary_name: ha-midi
+
+          # macOS Apple Silicon (M1/M2/M3/M4)
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary_name: ha-midi
+
+          # Windows AMD64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary_name: ha-midi.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5'
+
+      - name: Set up Docker Buildx
+        if: matrix.use_docker == true
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: --debug
+          driver-opts: |
+            image=moby/buildkit:latest
+
+      - name: Install dependencies (Linux native builds)
+        if: runner.os == 'Linux' && matrix.use_docker != true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Build (native platforms)
+        if: matrix.use_docker != true && runner.os != 'Windows'
+        env:
+          CGO_ENABLED: 1
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          go build -ldflags="-s -w" -o ${{ matrix.binary_name }} .
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CGO_ENABLED: 1
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -ldflags="-s -w" -o ${{ matrix.binary_name }} .
+
+      - name: Build ARM with Docker cross-compilation
+        if: matrix.use_docker == true
+        run: |
+          # Create a Dockerfile for ARM builds with proper caching
+          cat > Dockerfile.arm << 'EOF'
+          # Using debian-slim for smaller image size while maintaining glibc compatibility
+          FROM golang:1.24.5-bullseye AS builder
+
+          # Install only essential build dependencies (cached layer)
+          # Using Debian packages for glibc compatibility with Raspberry Pi OS
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+              gcc \
+              g++ \
+              libc6-dev \
+              libasound2-dev \
+              pkg-config \
+              ca-certificates \
+              && rm -rf /var/lib/apt/lists/*
+
+          WORKDIR /build
+
+          # Copy go mod files first for better caching
+          COPY go.mod go.sum ./
+
+          # Download dependencies (cached until go.mod changes)
+          RUN --mount=type=cache,target=/go/pkg/mod \
+              --mount=type=cache,target=/root/.cache/go-build \
+              go mod download && go mod verify
+
+          # Copy source code (only invalidates from here if source changes)
+          COPY . .
+
+          ENV CGO_ENABLED=1
+          ENV GOTOOLCHAIN=auto
+
+          # Build with cache mounts for faster rebuilds
+          RUN --mount=type=cache,target=/go/pkg/mod \
+              --mount=type=cache,target=/root/.cache/go-build \
+              go build -ldflags="-s -w" -o ha-midi .
+
+          FROM scratch
+          COPY --from=builder /build/ha-midi /ha-midi
+          EOF
+
+          # Determine the Docker platform
+          if [ "${{ matrix.goarch }}" = "arm64" ]; then
+            DOCKER_PLATFORM="linux/arm64"
+          else
+            DOCKER_PLATFORM="linux/arm/v7"
+          fi
+
+          # Build and extract the binary with caching
+          docker buildx build \
+            --platform=$DOCKER_PLATFORM \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            -f Dockerfile.arm \
+            --output type=tar,dest=output.tar \
+            .
+
+          tar -xf output.tar ha-midi
+          # Rename directly to final name for Docker builds
+          if [ "${{ matrix.goarm }}" != "" ]; then
+            mv ha-midi ha-midi_${{ matrix.goos }}_${{ matrix.goarch }}v${{ matrix.goarm }}
+          else
+            mv ha-midi ha-midi_${{ matrix.goos }}_${{ matrix.goarch }}
+          fi
+
+      - name: Rename binary (non-Docker builds)
+        if: matrix.use_docker != true
+        shell: bash
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            mv ${{ matrix.binary_name }} ha-midi_${{ matrix.goos }}_${{ matrix.goarch }}.exe
+          elif [ "${{ matrix.goarm }}" != "" ]; then
+            mv ${{ matrix.binary_name }} ha-midi_${{ matrix.goos }}_${{ matrix.goarch }}v${{ matrix.goarm }}
+          else
+            mv ${{ matrix.binary_name }} ha-midi_${{ matrix.goos }}_${{ matrix.goarch }}
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ha-midi-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('-v{0}', matrix.goarm) || '' }}
+          path: ha-midi_*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: List artifacts
+        run: ls -la ./artifacts/*/
+
+      - name: Move binaries to root
+        run: |
+          mkdir -p binaries
+          find ./artifacts -type f -name "ha-midi_*" -exec mv {} ./binaries/ \;
+          ls -la ./binaries/
+
+      - name: Generate checksums
+        run: |
+          cd binaries
+          sha256sum ha-midi_* > checksums.txt
+          cat checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./binaries/ha-midi_*
+            ./binaries/checksums.txt
+          draft: false
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            ### Platform-specific binaries:
+            - **Linux AMD64**: `ha-midi_linux_amd64` - Standard x86_64 Linux systems
+            - **Linux ARM64**: `ha-midi_linux_arm64` - Raspberry Pi 3/4/5, ARM64 servers
+            - **Linux ARMv7**: `ha-midi_linux_armv7` - Raspberry Pi 2, older ARM systems
+            - **macOS Intel**: `ha-midi_darwin_amd64` - Intel-based Macs
+            - **macOS Apple Silicon**: `ha-midi_darwin_arm64` - M1/M2/M3/M4 Macs
+            - **Windows**: `ha-midi_windows_amd64.exe` - 64-bit Windows
+
+            See the [README](https://github.com/seler/ha-midi#installation) for detailed installation instructions.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
