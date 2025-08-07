@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -66,13 +67,27 @@ func CreateMIDIDevice(deviceID, deviceName string, config *Config) *MIDIDevice {
 	// Create unique device identifier that includes bridge ID
 	uniqueDeviceID := fmt.Sprintf("%s_%s", config.Bridge.ID, deviceID)
 
+	// Create a display name that includes the bridge name and cleans up MIDI port info
+	// Remove ALSA port numbers (e.g., "24:1") from the device name for cleaner display
+	cleanDeviceName := deviceName
+	if colonIndex := strings.LastIndex(deviceName, ":"); colonIndex != -1 {
+		// Check if what follows the colon looks like ALSA port numbers (digits and colons)
+		suffix := deviceName[colonIndex+1:]
+		if matched, _ := regexp.MatchString(`^[\d:]+$`, suffix); matched {
+			cleanDeviceName = deviceName[:colonIndex]
+		}
+	}
+
+	// Create display name with bridge prefix
+	displayName := fmt.Sprintf("%s: %s", config.Bridge.Name, cleanDeviceName)
+
 	device := &MIDIDevice{
 		ID:         deviceID,
 		Name:       deviceName,
 		DeviceName: deviceName, // Store actual device name for config lookup
 		HADevice: HADevice{
 			Identifiers:  []string{uniqueDeviceID},
-			Name:         deviceName,
+			Name:         displayName,
 			Manufacturer: config.HomeAssistant.DeviceManufacturer,
 			Model:        config.HomeAssistant.DeviceModel,
 			SwVersion:    "1.0.0",
