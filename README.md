@@ -2,6 +2,18 @@
 
 Bridge MIDI devices with Home Assistant via MQTT.
 
+## Screenshots
+
+See HA-MIDI Bridge in action with Home Assistant:
+
+### MIDI Pitch Bend Controls
+
+![MIDI Pitch Bend Controls](images/ha-midi-pitch-bend-controls.png)
+
+### MIDI Note Detection
+
+![MIDI Note Detection](images/ha-midi-note-detection.png)
+
 ## Features
 
 - **Auto-discovery** of USB MIDI devices
@@ -205,17 +217,3 @@ midi:
 ```bash
 go build -o ha-midi .
 ```
-
-## License
-
-GNU Affero General Public License v3.0 (AGPL-3.0) - See [LICENSE](LICENSE) file for full text.
-
-This means:
-- ✅ Commercial use allowed
-- ✅ Modification allowed
-- ✅ Distribution allowed
-- ✅ Patent use allowed
-- ⚠️ Must disclose source code (including for network use)
-- ⚠️ Must include license and copyright notice
-- ⚠️ Must state changes made
-- ⚠️ Derivatives must use same license (AGPL-3.0)
