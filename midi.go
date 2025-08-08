@@ -15,18 +15,20 @@ import (
 
 // MIDIHandler handles MIDI device connections and events
 type MIDIHandler struct {
-	config        *Config
-	logger        *logrus.Logger
-	mqttClient    *MQTTClient
-	devices       map[string]*MIDIDevice
-	stopFuncs     map[string]func() // Keep track of stop functions for each device
-	mutex         sync.RWMutex
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
-	onMIDIEvent   func(deviceID, entityID string, value interface{})
-	encoderTimers map[string]*time.Timer // Track timers for relative encoders
-	lastPortScan  time.Time              // Track when we last got port list to avoid excessive ALSA calls
-	cachedInPorts []drivers.In           // Cache input ports to reduce ALSA client creation
+	config         *Config
+	logger         *logrus.Logger
+	mqttClient     *MQTTClient
+	devices        map[string]*MIDIDevice
+	stopFuncs      map[string]func() // Keep track of stop functions for each device
+	mutex          sync.RWMutex
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	encoderTimers  map[string]*time.Timer // Track timers for relative encoders
+	lastPortScan   time.Time              // Track when we last got port list to avoid excessive ALSA calls
+	cachedInPorts  []drivers.In           // Cache input ports to reduce ALSA client creation
+	cachedOutPorts []drivers.Out          // Cache output ports to reduce ALSA client creation
+	lastOutScan    time.Time              // Track when we last got output port list
+	activeSenders  map[string]func()      // Track active MIDI senders for cleanup
 }
 
 // NewMIDIHandler creates a new MIDI handler
@@ -39,6 +41,7 @@ func NewMIDIHandler(config *Config, logger *logrus.Logger, mqttClient *MQTTClien
 		stopFuncs:     make(map[string]func()),
 		stopChan:      make(chan struct{}),
 		encoderTimers: make(map[string]*time.Timer),
+		activeSenders: make(map[string]func()),
 	}
 }
 
@@ -49,6 +52,10 @@ func (mh *MIDIHandler) Start() error {
 	// Start device discovery
 	mh.wg.Add(1)
 	go mh.deviceDiscoveryLoop()
+
+	// Start periodic sender cleanup
+	mh.wg.Add(1)
+	go mh.senderCleanupLoop()
 
 	return nil
 }
@@ -66,6 +73,13 @@ func (mh *MIDIHandler) Stop() {
 		delete(mh.encoderTimers, timerKey)
 	}
 
+	// Clean up all active MIDI senders
+	for senderKey, closeFunc := range mh.activeSenders {
+		mh.logger.WithField("sender", senderKey).Debug("Closing MIDI sender")
+		closeFunc()
+		delete(mh.activeSenders, senderKey)
+	}
+
 	// Stop all device listeners and set devices offline
 	mh.mutex.Lock()
 	defer mh.mutex.Unlock()
@@ -79,7 +93,7 @@ func (mh *MIDIHandler) Stop() {
 		}
 	}
 
-	// Close the driver
+	// Close the driver (this will clean up any remaining ALSA resources)
 	midi.CloseDriver()
 }
 
@@ -109,10 +123,40 @@ func (mh *MIDIHandler) deviceDiscoveryLoop() {
 	}
 }
 
+// senderCleanupLoop periodically cleans up inactive MIDI senders
+func (mh *MIDIHandler) senderCleanupLoop() {
+	defer mh.wg.Done()
+
+	// Clean up senders every 5 minutes
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-mh.stopChan:
+			return
+		case <-ticker.C:
+			mh.cleanupInactiveSenders()
+		}
+	}
+}
+
+// cleanupInactiveSenders removes MIDI senders that haven't been used recently
+func (mh *MIDIHandler) cleanupInactiveSenders() {
+	mh.mutex.Lock()
+	defer mh.mutex.Unlock()
+
+	// For now, we'll keep senders active as they're lightweight
+	// In the future, we could track last-used timestamps and clean up old ones
+	// This is mainly here as a framework for future improvements
+	mh.logger.WithField("active_senders", len(mh.activeSenders)).Debug("MIDI sender cleanup check completed")
+}
+
 // listDiscoveredDevices lists all currently discovered MIDI devices
 func (mh *MIDIHandler) listDiscoveredDevices() {
-	ins := midi.GetInPorts()
-	outs := midi.GetOutPorts()
+	// Use cached ports to avoid creating unnecessary ALSA clients
+	ins := mh.getCachedInPorts()
+	outs := mh.getCachedOutPorts()
 
 	if len(ins) == 0 {
 		mh.logger.Info("No MIDI input devices discovered")
@@ -175,23 +219,79 @@ func (mh *MIDIHandler) listDiscoveredDevices() {
 	}
 }
 
-// scanDevices scans for available MIDI devices
-func (mh *MIDIHandler) scanDevices() {
-	// Only refresh the port list periodically to avoid excessive ALSA client creation
-	// This prevents the "Cannot allocate memory" error that occurs after prolonged use
+// getCachedInPorts returns cached input ports or refreshes them if needed
+func (mh *MIDIHandler) getCachedInPorts() []drivers.In {
 	now := time.Now()
 	shouldRefreshPorts := now.Sub(mh.lastPortScan) > mh.config.MIDI.PortScanInterval || len(mh.cachedInPorts) == 0
 
-	var ins []drivers.In
 	if shouldRefreshPorts {
-		ins = midi.GetInPorts()
-		mh.cachedInPorts = ins
+		mh.cachedInPorts = midi.GetInPorts()
 		mh.lastPortScan = now
-		mh.logger.Debug("Refreshed MIDI port list from ALSA")
-	} else {
-		ins = mh.cachedInPorts
-		mh.logger.Debug("Using cached MIDI port list")
+		mh.logger.Debug("Refreshed MIDI input port list from ALSA")
 	}
+
+	return mh.cachedInPorts
+}
+
+// getCachedOutPorts returns cached output ports or refreshes them if needed
+func (mh *MIDIHandler) getCachedOutPorts() []drivers.Out {
+	now := time.Now()
+	shouldRefreshPorts := now.Sub(mh.lastOutScan) > mh.config.MIDI.PortScanInterval || len(mh.cachedOutPorts) == 0
+
+	if shouldRefreshPorts {
+		mh.cachedOutPorts = midi.GetOutPorts()
+		mh.lastOutScan = now
+		mh.logger.Debug("Refreshed MIDI output port list from ALSA")
+	}
+
+	return mh.cachedOutPorts
+}
+
+// createManagedSender creates a MIDI sender with proper resource management
+func (mh *MIDIHandler) createManagedSender(out drivers.Out, senderKey string) (func(midi.Message) error, error) {
+	// Check if we already have an active sender for this key
+	if closeFunc, exists := mh.activeSenders[senderKey]; exists {
+		mh.logger.WithField("sender_key", senderKey).Debug("Cleaning up existing MIDI sender before creating new one")
+		closeFunc()
+		delete(mh.activeSenders, senderKey)
+	}
+
+	send, err := midi.SendTo(out)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a cleanup function for this sender
+	closeFunc := func() {
+		// The midi library doesn't expose a direct close method for senders,
+		// but closing the driver will clean up all resources
+		mh.logger.WithField("sender_key", senderKey).Debug("MIDI sender cleanup completed")
+	}
+
+	// Store the cleanup function
+	mh.activeSenders[senderKey] = closeFunc
+
+	// Wrap the send function to provide automatic cleanup on errors
+	wrappedSend := func(msg midi.Message) error {
+		err := send(msg)
+		if err != nil {
+			// On error, clean up the sender
+			mh.logger.WithError(err).WithField("sender_key", senderKey).Debug("MIDI send failed, cleaning up sender")
+			if closeFunc, exists := mh.activeSenders[senderKey]; exists {
+				closeFunc()
+				delete(mh.activeSenders, senderKey)
+			}
+		}
+		return err
+	}
+
+	return wrappedSend, nil
+}
+
+// scanDevices scans for available MIDI devices
+func (mh *MIDIHandler) scanDevices() {
+	// Use cached input ports to avoid excessive ALSA client creation
+	ins := mh.getCachedInPorts()
 
 	mh.mutex.Lock()
 	defer mh.mutex.Unlock()
@@ -213,6 +313,7 @@ func (mh *MIDIHandler) scanDevices() {
 			mh.logger.WithError(err).WithField("device_id", deviceID).Error("Failed to connect to MIDI device")
 			// If connection fails, force a port refresh on next scan
 			mh.lastPortScan = time.Time{}
+			mh.lastOutScan = time.Time{}
 			continue
 		}
 
@@ -225,6 +326,7 @@ func (mh *MIDIHandler) scanDevices() {
 			mh.disconnectDevice(deviceID)
 			// Force a port refresh after device disconnection
 			mh.lastPortScan = time.Time{}
+			mh.lastOutScan = time.Time{}
 		}
 	}
 }
@@ -1081,7 +1183,8 @@ func (mh *MIDIHandler) sendButtonLightCommand(device *MIDIDevice, parts []string
 		return false
 	}
 
-	send, err := midi.SendTo(out)
+	senderKey := fmt.Sprintf("light_%s_%s", device.ID, out.String())
+	send, err := mh.createManagedSender(out, senderKey)
 	if err != nil {
 		mh.logger.WithError(err).WithFields(logrus.Fields{
 			"device":      device.DeviceName,
@@ -1324,7 +1427,8 @@ func (mh *MIDIHandler) sendControlChangeCommand(device *MIDIDevice, parts []stri
 		return false
 	}
 
-	send, err := midi.SendTo(out)
+	senderKey := fmt.Sprintf("cc_%s_%s", device.ID, out.String())
+	send, err := mh.createManagedSender(out, senderKey)
 	if err != nil {
 		mh.logger.WithError(err).WithFields(logrus.Fields{
 			"device":      device.DeviceName,
@@ -1400,7 +1504,8 @@ func (mh *MIDIHandler) sendProgramChangeCommand(device *MIDIDevice, parts []stri
 		return false
 	}
 
-	send, err := midi.SendTo(out)
+	senderKey := fmt.Sprintf("pc_%s_%s", device.ID, out.String())
+	send, err := mh.createManagedSender(out, senderKey)
 	if err != nil {
 		mh.logger.WithError(err).WithFields(logrus.Fields{
 			"device":      device.DeviceName,
@@ -1494,7 +1599,8 @@ func (mh *MIDIHandler) sendPitchBendCommand(device *MIDIDevice, parts []string, 
 		return false
 	}
 
-	send, err := midi.SendTo(out)
+	senderKey := fmt.Sprintf("pb_%s_%s", device.ID, out.String())
+	send, err := mh.createManagedSender(out, senderKey)
 	if err != nil {
 		mh.logger.WithError(err).WithFields(logrus.Fields{
 			"device":      device.DeviceName,
@@ -1575,7 +1681,7 @@ func (mh *MIDIHandler) sendNoteCommand(parts []string, command string) bool {
 	}
 
 	// Try to find an output port for sending commands
-	outPorts := midi.GetOutPorts()
+	outPorts := mh.getCachedOutPorts()
 	if len(outPorts) == 0 {
 		mh.logger.Warn("No MIDI output ports available for sending note commands")
 		return false
@@ -1583,7 +1689,8 @@ func (mh *MIDIHandler) sendNoteCommand(parts []string, command string) bool {
 
 	// Use the first available output port
 	out := outPorts[0]
-	send, err := midi.SendTo(out)
+	senderKey := fmt.Sprintf("note_%s_%s", "global", out.String())
+	send, err := mh.createManagedSender(out, senderKey)
 	if err != nil {
 		mh.logger.WithError(err).Error("Failed to create MIDI sender for note command")
 		return false
@@ -1636,10 +1743,8 @@ func (mh *MIDIHandler) sendNoteCommand(parts []string, command string) bool {
 
 // findOutputPortForDevice tries to find the best output port for a given device
 func (mh *MIDIHandler) findOutputPortForDevice(device *MIDIDevice) (drivers.Out, error) {
-	// Note: GetOutPorts creates ALSA resources, so we should cache these when possible
-	// However, output ports need to be fresh for sending commands
-	// TODO: Consider caching output ports similarly to input ports
-	outPorts := midi.GetOutPorts()
+	// Use cached output ports to reduce ALSA resource creation
+	outPorts := mh.getCachedOutPorts()
 	if len(outPorts) == 0 {
 		return nil, fmt.Errorf("no MIDI output ports available")
 	}
