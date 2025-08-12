@@ -369,23 +369,8 @@ func (mh *MIDIHandler) connectDevice(in drivers.In, deviceID string) error {
 		}).Info("Updated existing entities to read-only on device connection")
 	}
 
-	// Publish device discovery information
-	if err := mh.mqttClient.PublishDiscovery(device); err != nil {
-		mh.logger.WithError(err).WithField("device_id", deviceID).Error("Failed to publish device discovery")
-		// Don't return error, continue with connection
-	}
-
-	// Subscribe to command topics for controllable entities
-	if err := mh.mqttClient.Subscribe(device); err != nil {
-		mh.logger.WithError(err).WithField("device_id", deviceID).Error("Failed to subscribe to command topics")
-		// Don't return error, continue with connection
-	}
-
-	// Publish device as online
-	if err := mh.mqttClient.SetDeviceOnline(device); err != nil {
-		mh.logger.WithError(err).WithField("device_id", deviceID).Error("Failed to publish device online status")
-		// Don't return error, continue with connection
-	}
+	// Delay device registration until first event is sent (entities created)
+	// We'll register (publish availability + subscribe) when the first discovery is published.
 
 	// Set up MIDI listening
 	stop, err := midi.ListenTo(in, func(msg midi.Message, timestampms int32) {
@@ -854,6 +839,19 @@ func (mh *MIDIHandler) handlePitchBend(device *MIDIDevice, channel uint8, pitchB
 
 // publishEntityDiscovery publishes discovery for a single entity
 func (mh *MIDIHandler) publishEntityDiscovery(device *MIDIDevice, entityID string) {
+	// If this is the first time we're publishing discovery for this device, perform registration now
+	if !device.Registered {
+		if err := mh.mqttClient.SetDeviceOnline(device); err != nil {
+			mh.logger.WithError(err).WithField("device_id", device.ID).Error("Failed to publish device online status")
+			// continue anyway
+		}
+		if err := mh.mqttClient.Subscribe(device); err != nil {
+			mh.logger.WithError(err).WithField("device_id", device.ID).Error("Failed to subscribe to command topics")
+			// continue anyway
+		}
+		device.Registered = true
+		mh.logger.WithField("device_id", device.ID).Info("Device registered on first entity discovery")
+	}
 	entityType := device.GetEntityType(entityID)
 	topic := device.GetDiscoveryTopic(entityID, entityType, mh.config.MQTT.DiscoveryPrefix, mh.config.Bridge.ID)
 

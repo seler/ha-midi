@@ -35,6 +35,8 @@ type HAEntity struct {
 	Max               int      `json:"max,omitempty"`
 	DeviceClass       string   `json:"device_class,omitempty"`
 	EntityCategory    string   `json:"entity_category,omitempty"`
+	// Disable entity by default in HA entity registry (not visible by default)
+	EntityRegistryEnabledDefault bool `json:"entity_registry_enabled_default"`
 	// Light-specific properties
 	BrightnessCommandTopic string `json:"brightness_command_topic,omitempty"`
 	BrightnessStateTopic   string `json:"brightness_state_topic,omitempty"`
@@ -58,6 +60,7 @@ type MIDIDevice struct {
 	AvailabilityTopic string                   // Common availability topic for all entities of this device
 	RelativeEncoders  map[string]int           // Track relative encoder accumulated change amounts
 	CurrentChords     map[uint8]map[uint8]bool // Track currently pressed notes per channel [channel][note] = pressed
+	Registered        bool                     // Whether the device has been registered (first discovery published)
 }
 
 // CreateMIDIDevice creates a new MIDI device for Home Assistant
@@ -70,17 +73,17 @@ func CreateMIDIDevice(deviceID, deviceName string, config *Config) *MIDIDevice {
 	// Create a display name that includes the bridge name and cleans up MIDI port info
 	// Clean up common MIDI device name patterns
 	cleanDeviceName := deviceName
-	
+
 	// Remove ALSA port numbers at the end (e.g., " 24:1", " 24")
 	if matched, _ := regexp.MatchString(`\s+\d+(:\d+)?$`, cleanDeviceName); matched {
 		cleanDeviceName = regexp.MustCompile(`\s+\d+(:\d+)?$`).ReplaceAllString(cleanDeviceName, "")
 	}
-	
+
 	// Handle "MANUFACTURER:MANUFACTURER DEVICE" pattern (common in ALSA)
 	if colonIndex := strings.Index(cleanDeviceName, ":"); colonIndex != -1 {
 		beforeColon := strings.TrimSpace(cleanDeviceName[:colonIndex])
 		afterColon := strings.TrimSpace(cleanDeviceName[colonIndex+1:])
-		
+
 		// If the part before colon is a prefix of what comes after, remove the redundant part
 		if strings.HasPrefix(strings.ToLower(afterColon), strings.ToLower(beforeColon)) {
 			cleanDeviceName = afterColon
@@ -119,17 +122,18 @@ func (md *MIDIDevice) AddBinarySensorEntity(entityID, name string, config *Confi
 	stateTopic := fmt.Sprintf("ha-midi/%s/%s/%s/state", config.Bridge.ID, md.ID, entityID)
 
 	entity := &HAEntity{
-		Device:              md.HADevice,
-		Name:                name,
-		UniqueID:            uniqueID,
-		StateTopic:          stateTopic,
-		PayloadOn:           "ON",
-		PayloadOff:          "OFF",
-		DeviceClass:         "sound", // Binary sensor device class for sound/music
-		Icon:                "mdi:piano",
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		Device:                       md.HADevice,
+		Name:                         name,
+		UniqueID:                     uniqueID,
+		StateTopic:                   stateTopic,
+		PayloadOn:                    "ON",
+		PayloadOff:                   "OFF",
+		DeviceClass:                  "sound", // Binary sensor device class for sound/music
+		Icon:                         "mdi:piano",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -142,17 +146,18 @@ func (md *MIDIDevice) AddLightEntity(entityID, name string, config *Config) {
 	commandTopic := fmt.Sprintf("ha-midi/%s/%s/%s/set", config.Bridge.ID, md.ID, entityID)
 
 	entity := &HAEntity{
-		Device:              md.HADevice,
-		Name:                name,
-		UniqueID:            uniqueID,
-		StateTopic:          stateTopic,
-		CommandTopic:        commandTopic,
-		PayloadOn:           "ON",
-		PayloadOff:          "OFF",
-		Icon:                "mdi:led-on",
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		Device:                       md.HADevice,
+		Name:                         name,
+		UniqueID:                     uniqueID,
+		StateTopic:                   stateTopic,
+		CommandTopic:                 commandTopic,
+		PayloadOn:                    "ON",
+		PayloadOff:                   "OFF",
+		Icon:                         "mdi:led-on",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -165,19 +170,20 @@ func (md *MIDIDevice) AddSwitchEntity(entityID, name string, config *Config) {
 	commandTopic := fmt.Sprintf("ha-midi/%s/%s/%s/set", config.Bridge.ID, md.ID, entityID)
 
 	entity := &HAEntity{
-		Device:              md.HADevice,
-		Name:                name,
-		UniqueID:            uniqueID,
-		StateTopic:          stateTopic,
-		CommandTopic:        commandTopic,
-		PayloadOn:           "ON",
-		PayloadOff:          "OFF",
-		StateOn:             "ON",
-		StateOff:            "OFF",
-		Icon:                "mdi:piano",
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		Device:                       md.HADevice,
+		Name:                         name,
+		UniqueID:                     uniqueID,
+		StateTopic:                   stateTopic,
+		CommandTopic:                 commandTopic,
+		PayloadOn:                    "ON",
+		PayloadOff:                   "OFF",
+		StateOn:                      "ON",
+		StateOff:                     "OFF",
+		Icon:                         "mdi:piano",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -190,17 +196,18 @@ func (md *MIDIDevice) AddNumberEntity(entityID, name string, min, max int, confi
 	commandTopic := fmt.Sprintf("ha-midi/%s/%s/%s/set", config.Bridge.ID, md.ID, entityID)
 
 	entity := &HAEntity{
-		Device:              md.HADevice,
-		Name:                name,
-		UniqueID:            uniqueID,
-		StateTopic:          stateTopic,
-		CommandTopic:        commandTopic,
-		Icon:                "mdi:tune-vertical",
-		Min:                 min,
-		Max:                 max,
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		Device:                       md.HADevice,
+		Name:                         name,
+		UniqueID:                     uniqueID,
+		StateTopic:                   stateTopic,
+		CommandTopic:                 commandTopic,
+		Icon:                         "mdi:tune-vertical",
+		Min:                          min,
+		Max:                          max,
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -213,18 +220,19 @@ func (md *MIDIDevice) AddPercentageEntity(entityID, name string, config *Config)
 	commandTopic := fmt.Sprintf("ha-midi/%s/%s/%s/set", config.Bridge.ID, md.ID, entityID)
 
 	entity := &HAEntity{
-		Device:              md.HADevice,
-		Name:                name,
-		UniqueID:            uniqueID,
-		StateTopic:          stateTopic,
-		CommandTopic:        commandTopic,
-		Icon:                "mdi:tune",
-		Min:                 0,
-		Max:                 100,
-		UnitOfMeasurement:   "%",
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		Device:                       md.HADevice,
+		Name:                         name,
+		UniqueID:                     uniqueID,
+		StateTopic:                   stateTopic,
+		CommandTopic:                 commandTopic,
+		Icon:                         "mdi:tune",
+		Min:                          0,
+		Max:                          100,
+		UnitOfMeasurement:            "%",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -243,9 +251,10 @@ func (md *MIDIDevice) AddReadOnlyNumberEntity(entityID, name string, min, max in
 		// No CommandTopic - makes it read-only
 		Icon: "mdi:tune-vertical",
 		// Note: Min/Max not included for sensor entities - only for number entities
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -265,9 +274,10 @@ func (md *MIDIDevice) AddReadOnlyPercentageEntity(entityID, name string, config 
 		Icon:              "mdi:tune",
 		UnitOfMeasurement: "%",
 		// Note: Min/Max not included for sensor entities - only for number entities
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -286,9 +296,10 @@ func (md *MIDIDevice) AddRelativeEncoderEntity(entityID, name string, config *Co
 		// No CommandTopic - makes it read-only
 		Icon: "mdi:rotate-right",
 		// Note: Min/Max not included for sensor entities - only for number entities
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
@@ -310,10 +321,11 @@ func (md *MIDIDevice) AddChordEntity(entityID, name string, config *Config) {
 		UniqueID:   uniqueID,
 		StateTopic: stateTopic,
 		// No CommandTopic - makes it read-only
-		Icon:                "mdi:piano",
-		AvailabilityTopic:   md.AvailabilityTopic,
-		PayloadAvailable:    "online",
-		PayloadNotAvailable: "offline",
+		Icon:                         "mdi:piano",
+		EntityRegistryEnabledDefault: false,
+		AvailabilityTopic:            md.AvailabilityTopic,
+		PayloadAvailable:             "online",
+		PayloadNotAvailable:          "offline",
 	}
 
 	md.Entities[entityID] = entity
