@@ -39,6 +39,8 @@ See HA-MIDI Bridge in action with Home Assistant:
 
 ## Installation
 
+Note: After the installation, the respective MIDI entities only become visible in Home Assistant after the first event was received from the MIDI device -> press / move the controls you want to use after the installation to see them in HA.
+
 ### Linux (Systemd)
 
 ```bash
